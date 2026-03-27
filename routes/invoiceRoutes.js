@@ -1,19 +1,15 @@
-// routes/invoiceRoutes.js
 const express = require('express');
 const router = express.Router();
 const {
-  getAllInvoices,
-  getInvoiceById,
-  createInvoice,
-  updateInvoice,
-  deleteInvoice,
-  calculateInvoiceTotal
+  getAllInvoices, getInvoiceById, createInvoice, updateInvoice,
+  deleteInvoice, calculateInvoiceTotal, getSalesReport
 } = require('../controllers/invoiceController');
 
+router.get('/report', getSalesReport);
+router.post('/calculate', calculateInvoiceTotal);
 router.get('/', getAllInvoices);
 router.get('/:id', getInvoiceById);
 router.post('/', createInvoice);
-router.post('/calculate', calculateInvoiceTotal);  // POST /api/invoices/calculate - real-time calc
 router.put('/:id', updateInvoice);
 router.delete('/:id', deleteInvoice);
 
