@@ -7,10 +7,11 @@ require('dotenv').config();
 const app = express();
 
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'],
+  origin: ['https://fish-farm-website-frontend.onrender.com'],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -42,7 +43,7 @@ mongoose.connect(process.env.MONGODB_URI)
       console.log('✅ Default accounting year 2025-2026 created');
     }
     const PORT = process.env.PORT || 5000;
-    app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+    app.listen(PORT, () => console.log(`🚀 Server running on https://fish-farm-website-backend.onrender.com:${PORT}`));
   })
   .catch((err) => {
     console.error('❌ MongoDB connection error:', err.message);
