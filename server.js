@@ -7,7 +7,11 @@ require('dotenv').config();
 const app = express();
 
 app.use(cors({
-  origin: ['https://fish-farm-website-frontend.onrender.com'],
+  origin: [
+    'https://fish-farm-website-frontend.onrender.com',
+    'https://muthupandifishfarm.in',
+    'https://www.muthupandifishfarm.in'
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
