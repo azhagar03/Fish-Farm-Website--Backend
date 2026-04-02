@@ -1,25 +1,30 @@
-// controllers/invoiceController.js - Updated with accounting year, GST, customer balance
+// controllers/invoiceController.js
 const Invoice = require('../models/Invoice');
 const AccountingYear = require('../models/AccountingYear');
 const Customer = require('../models/Customer');
 
-// Get next invoice number for active accounting year
+// ── KEY FIX ──────────────────────────────────────────────────────────────────
+// Problem: invoiceNo is globally unique in DB, but different years can have
+// same numbers (year 1: #1,#2,#3 | year 2: #1,#2,#3) → duplicate key error.
+//
+// Solution: invoiceNo uniqueness must be scoped per accountingYearId.
+// We also reset invoiceCounter to 0 when a FRESH year (counter===0) is activated
+// so first invoice correctly gets #1.
+// ─────────────────────────────────────────────────────────────────────────────
+
 const getNextInvoiceNo = async () => {
-  // $inc is atomic — even if all invoices are deleted, counter never goes back
   const activeYear = await AccountingYear.findOneAndUpdate(
     { isActive: true },
     { $inc: { invoiceCounter: 1 } },
-    { new: true }           // returns the doc AFTER increment
+    { new: true }
   );
 
   if (!activeYear) {
-    // Fallback: no accounting year configured — use a global sequence
-    // Use a separate counter doc or just error out gracefully
     throw new Error('No active accounting year found. Please set one in Accounting Years.');
   }
 
   return {
-    no: activeYear.invoiceCounter,   // this is now the incremented value
+    no: activeYear.invoiceCounter,
     yearId: activeYear._id,
     yearLabel: activeYear.label
   };
@@ -29,8 +34,8 @@ const calcTotals = (items, cgstPercent, sgstPercent, transport) => {
   let subtotal = 0;
   let totalDiscount = 0;
   const calcItems = items.map((item, idx) => {
-    const qty = parseFloat(item.quantity) || 0;
-    const rate = parseFloat(item.rate) || 0;
+    const qty  = parseFloat(item.quantity) || 0;
+    const rate = parseFloat(item.rate)     || 0;
     const disc = parseFloat(item.discount) || 0;
     const amount = parseFloat(((qty * rate) - disc).toFixed(2));
     subtotal += amount;
@@ -38,19 +43,24 @@ const calcTotals = (items, cgstPercent, sgstPercent, transport) => {
     return { ...item, slNo: idx + 1, amount };
   });
   subtotal = parseFloat(subtotal.toFixed(2));
-  const cgstAmount = parseFloat(((subtotal * (cgstPercent || 0)) / 100).toFixed(2));
-  const sgstAmount = parseFloat(((subtotal * (sgstPercent || 0)) / 100).toFixed(2));
-  const totalGst = parseFloat((cgstAmount + sgstAmount).toFixed(2));
-  const grandTotal = parseFloat((subtotal + totalGst).toFixed(2));
+  const cgstAmount  = parseFloat(((subtotal * (cgstPercent || 0)) / 100).toFixed(2));
+  const sgstAmount  = parseFloat(((subtotal * (sgstPercent || 0)) / 100).toFixed(2));
+  const totalGst    = parseFloat((cgstAmount + sgstAmount).toFixed(2));
+  const grandTotal  = parseFloat((subtotal + totalGst).toFixed(2));
   const transportAmt = parseFloat(transport || 0);
-  const netAmount = parseFloat((grandTotal + transportAmt).toFixed(2));
-  return { calcItems, subtotal, totalDiscount: parseFloat(totalDiscount.toFixed(2)), cgstAmount, sgstAmount, totalGst, grandTotal, netAmount };
+  const netAmount   = parseFloat((grandTotal + transportAmt).toFixed(2));
+  return {
+    calcItems, subtotal,
+    totalDiscount: parseFloat(totalDiscount.toFixed(2)),
+    cgstAmount, sgstAmount, totalGst, grandTotal, netAmount
+  };
 };
 
 const calculateInvoiceTotal = (req, res) => {
   try {
     const { items, cgstPercent, sgstPercent, transport } = req.body;
-    if (!items || !Array.isArray(items)) return res.status(400).json({ success: false, message: 'Items array required' });
+    if (!items || !Array.isArray(items))
+      return res.status(400).json({ success: false, message: 'Items array required' });
     const result = calcTotals(items, cgstPercent, sgstPercent, transport);
     res.json({ success: true, data: { items: result.calcItems, subtotal: result.subtotal, totalDiscount: result.totalDiscount, cgstAmount: result.cgstAmount, sgstAmount: result.sgstAmount, totalGst: result.totalGst, grandTotal: result.grandTotal, netAmount: result.netAmount } });
   } catch (err) {
@@ -80,7 +90,10 @@ const getAllInvoices = async (req, res) => {
     } else if (startDate || endDate) {
       filter.invoiceDate = {};
       if (startDate) filter.invoiceDate.$gte = new Date(startDate);
-      if (endDate) { const ed = new Date(endDate); ed.setHours(23, 59, 59); filter.invoiceDate.$lte = ed; }
+      if (endDate) {
+        const ed = new Date(endDate); ed.setHours(23, 59, 59);
+        filter.invoiceDate.$lte = ed;
+      }
     }
 
     const invoices = await Invoice.find(filter).sort({ invoiceNo: -1 });
@@ -111,40 +124,40 @@ const createInvoice = async (req, res) => {
       return res.status(400).json({ success: false, message: e.message });
     }
 
-    const result = calcTotals(items || [], cgstPercent, sgstPercent, transport);
-    const paid = parseFloat(paidAmount || 0);
+    const result  = calcTotals(items || [], cgstPercent, sgstPercent, transport);
+    const paid    = parseFloat(paidAmount || 0);
     const balance = parseFloat((result.netAmount - paid).toFixed(2));
 
     let paymentStatus = 'Pending';
     if (paid >= result.netAmount) paymentStatus = 'Paid';
-    else if (paid > 0) paymentStatus = 'Partial';
+    else if (paid > 0)            paymentStatus = 'Partial';
 
     const invoice = await Invoice.create({
       ...rest,
-      invoiceNo: no,
-      accountingYearId: yearId,
+      invoiceNo:           no,
+      accountingYearId:    yearId,
       accountingYearLabel: yearLabel,
-      items: result.calcItems,
-      subtotal: result.subtotal,
-      totalDiscount: result.totalDiscount,
-      cgstPercent: parseFloat(cgstPercent || 0),
-      sgstPercent: parseFloat(sgstPercent || 0),
-      cgstAmount: result.cgstAmount,
-      sgstAmount: result.sgstAmount,
-      totalGst: result.totalGst,
-      grandTotal: result.grandTotal,
-      transport: parseFloat(transport || 0),
-      netAmount: result.netAmount,
-      paidAmount: paid,
-      balanceAmount: balance < 0 ? 0 : balance,
+      items:               result.calcItems,
+      subtotal:            result.subtotal,
+      totalDiscount:       result.totalDiscount,
+      cgstPercent:         parseFloat(cgstPercent || 0),
+      sgstPercent:         parseFloat(sgstPercent || 0),
+      cgstAmount:          result.cgstAmount,
+      sgstAmount:          result.sgstAmount,
+      totalGst:            result.totalGst,
+      grandTotal:          result.grandTotal,
+      transport:           parseFloat(transport || 0),
+      netAmount:           result.netAmount,
+      paidAmount:          paid,
+      balanceAmount:       balance < 0 ? 0 : balance,
       paymentStatus,
-      customerId: customerId || null
+      customerId:          customerId || null
     });
 
     if (customerId) {
       const customer = await Customer.findById(customerId);
       if (customer) {
-        customer.balanceAmount = parseFloat((customer.balanceAmount + (balance < 0 ? 0 : balance)).toFixed(2));
+        customer.balanceAmount  = parseFloat((customer.balanceAmount  + (balance < 0 ? 0 : balance)).toFixed(2));
         customer.totalPurchased = parseFloat((customer.totalPurchased + result.netAmount).toFixed(2));
         await customer.save();
       }
@@ -152,61 +165,44 @@ const createInvoice = async (req, res) => {
 
     res.status(201).json({ success: true, data: invoice });
   } catch (err) {
+    // ── Handle duplicate key gracefully ──────────────────────────────────────
+    if (err.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invoice number conflict detected. Please refresh and try again, or sync the counter in Accounting Years.'
+      });
+    }
     res.status(400).json({ success: false, message: err.message });
   }
 };
-
-// Reset counter to match actual highest invoice in that year (migration helper)
-const syncCounter = async (req, res) => {
-  try {
-    const year = await AccountingYear.findById(req.params.id);
-    if (!year) return res.status(404).json({ success: false, message: 'Year not found' });
-
-    const last = await Invoice.findOne({ accountingYearId: year._id }).sort({ invoiceNo: -1 });
-    const maxNo = last ? last.invoiceNo : 0;
-
-    // Only move counter forward, never back
-    if (maxNo > year.invoiceCounter) {
-      year.invoiceCounter = maxNo;
-      await year.save();
-    }
-
-    res.json({ success: true, data: { invoiceCounter: year.invoiceCounter } });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-// Add to exports:
-
 
 const updateInvoice = async (req, res) => {
   try {
     const { items, cgstPercent, sgstPercent, transport, paidAmount, ...rest } = req.body;
     const result = items ? calcTotals(items, cgstPercent, sgstPercent, transport) : null;
-    const paid = parseFloat(paidAmount || 0);
+    const paid   = parseFloat(paidAmount || 0);
 
     let updateData = { ...rest };
     if (result) {
       const balance = parseFloat((result.netAmount - paid).toFixed(2));
       let paymentStatus = 'Pending';
       if (paid >= result.netAmount) paymentStatus = 'Paid';
-      else if (paid > 0) paymentStatus = 'Partial';
+      else if (paid > 0)            paymentStatus = 'Partial';
 
       updateData = {
         ...updateData,
-        items: result.calcItems,
-        subtotal: result.subtotal,
+        items:         result.calcItems,
+        subtotal:      result.subtotal,
         totalDiscount: result.totalDiscount,
-        cgstPercent: parseFloat(cgstPercent || 0),
-        sgstPercent: parseFloat(sgstPercent || 0),
-        cgstAmount: result.cgstAmount,
-        sgstAmount: result.sgstAmount,
-        totalGst: result.totalGst,
-        grandTotal: result.grandTotal,
-        transport: parseFloat(transport || 0),
-        netAmount: result.netAmount,
-        paidAmount: paid,
+        cgstPercent:   parseFloat(cgstPercent || 0),
+        sgstPercent:   parseFloat(sgstPercent || 0),
+        cgstAmount:    result.cgstAmount,
+        sgstAmount:    result.sgstAmount,
+        totalGst:      result.totalGst,
+        grandTotal:    result.grandTotal,
+        transport:     parseFloat(transport || 0),
+        netAmount:     result.netAmount,
+        paidAmount:    paid,
         balanceAmount: balance < 0 ? 0 : balance,
         paymentStatus
       };
@@ -225,13 +221,12 @@ const deleteInvoice = async (req, res) => {
     const invoice = await Invoice.findByIdAndDelete(req.params.id);
     if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
 
-    // Update customer balance if linked
     if (invoice.customerId) {
       const customer = await Customer.findById(invoice.customerId);
       if (customer) {
-        customer.balanceAmount = parseFloat((customer.balanceAmount - invoice.balanceAmount).toFixed(2));
+        customer.balanceAmount  = parseFloat((customer.balanceAmount  - invoice.balanceAmount).toFixed(2));
         customer.totalPurchased = parseFloat((customer.totalPurchased - invoice.netAmount).toFixed(2));
-        if (customer.balanceAmount < 0) customer.balanceAmount = 0;
+        if (customer.balanceAmount  < 0) customer.balanceAmount  = 0;
         if (customer.totalPurchased < 0) customer.totalPurchased = 0;
         await customer.save();
       }
@@ -264,15 +259,18 @@ const getSalesReport = async (req, res) => {
     } else if (startDate || endDate) {
       filter.invoiceDate = {};
       if (startDate) filter.invoiceDate.$gte = new Date(startDate);
-      if (endDate) { const ed = new Date(endDate); ed.setHours(23, 59, 59); filter.invoiceDate.$lte = ed; }
+      if (endDate) {
+        const ed = new Date(endDate); ed.setHours(23, 59, 59);
+        filter.invoiceDate.$lte = ed;
+      }
     }
 
-    const invoices = await Invoice.find(filter).sort({ invoiceDate: 1 });
-    const totalSales = invoices.reduce((s, i) => s + (i.netAmount || 0), 0);
-    const totalGst = invoices.reduce((s, i) => s + (i.totalGst || 0), 0);
-    const totalCgst = invoices.reduce((s, i) => s + (i.cgstAmount || 0), 0);
-    const totalSgst = invoices.reduce((s, i) => s + (i.sgstAmount || 0), 0);
-    const totalPaid = invoices.reduce((s, i) => s + (i.paidAmount || 0), 0);
+    const invoices    = await Invoice.find(filter).sort({ invoiceDate: 1 });
+    const totalSales  = invoices.reduce((s, i) => s + (i.netAmount    || 0), 0);
+    const totalGst    = invoices.reduce((s, i) => s + (i.totalGst     || 0), 0);
+    const totalCgst   = invoices.reduce((s, i) => s + (i.cgstAmount   || 0), 0);
+    const totalSgst   = invoices.reduce((s, i) => s + (i.sgstAmount   || 0), 0);
+    const totalPaid   = invoices.reduce((s, i) => s + (i.paidAmount   || 0), 0);
     const totalBalance = invoices.reduce((s, i) => s + (i.balanceAmount || 0), 0);
 
     res.json({ success: true, data: { invoices, totalSales, totalGst, totalCgst, totalSgst, totalPaid, totalBalance, count: invoices.length } });
@@ -281,5 +279,26 @@ const getSalesReport = async (req, res) => {
   }
 };
 
-module.exports = { getAllInvoices, syncCounter, getInvoiceById, createInvoice, updateInvoice, deleteInvoice, calculateInvoiceTotal, getSalesReport };
+const syncCounter = async (req, res) => {
+  try {
+    const year = await AccountingYear.findById(req.params.id);
+    if (!year) return res.status(404).json({ success: false, message: 'Year not found' });
 
+    const last  = await Invoice.findOne({ accountingYearId: year._id }).sort({ invoiceNo: -1 });
+    const maxNo = last ? last.invoiceNo : 0;
+
+    if (maxNo > year.invoiceCounter) {
+      year.invoiceCounter = maxNo;
+      await year.save();
+    }
+
+    res.json({ success: true, data: { invoiceCounter: year.invoiceCounter } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = {
+  getAllInvoices, getInvoiceById, createInvoice, updateInvoice,
+  deleteInvoice, calculateInvoiceTotal, getSalesReport, syncCounter
+};
