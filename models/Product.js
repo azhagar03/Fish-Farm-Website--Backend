@@ -23,7 +23,7 @@ const productSchema = new mongoose.Schema({
   },
   unit: {
     type: String,
-    enum: ['Pcs', 'Nos', 'Kg', 'Ltr', 'Round', 'Set', 'Pair'],
+    enum: ['Pcs', 'Nos', 'Kg', 'Ltr', 'Round', 'Set', 'Pair','Tank','Dozen','Glass','Meter','Big','Group','Free'],
     default: 'Pcs'
   },
   stock: {
